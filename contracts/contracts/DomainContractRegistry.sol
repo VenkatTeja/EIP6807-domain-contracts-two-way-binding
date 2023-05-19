@@ -26,6 +26,7 @@ contract DomainContractRegistry is ChainlinkClient{
   
   bytes32 private jobId;
   uint256 private fee;
+  string private domain;
   IDappRegistry private dappRegistry;
   mapping(string => RegistryInfo) public registryMap;
   mapping(string => RecordTransition) public recordTransitionMap;
@@ -43,6 +44,7 @@ contract DomainContractRegistry is ChainlinkClient{
     // if no, recordTransition(_domain, _dappRegistry);
       
     dappRegistry = IDappRegistry(_dappRegistry);
+    domain = _domain;
 
     if(registryMap[_domain].dappRegistry != address(0)) {
 
@@ -52,10 +54,7 @@ contract DomainContractRegistry is ChainlinkClient{
         // Check for each contract listed in contracts.json by calling 
         // dappRegistry.isMyContract(_address)
 
-        _checkForDomain(_domain);
-
-        // If all addresses match, update registryMap
-        registryMap[_domain].dappRegistry = _dappRegistry;
+        _checkForDomain(_domain, this.fulfill1.selector);
 
       } else {
         recordTransition(_domain, _dappRegistry);
@@ -63,19 +62,15 @@ contract DomainContractRegistry is ChainlinkClient{
 
     }else {
 
-    _checkForDomain(_domain);
-     
-    registryMap[_domain].dappRegistry = _dappRegistry;
-    registryMap[_domain].admin = dappRegistry.owner();
+    _checkForDomain(_domain, this.fulfill2.selector);
     }
   }
 
-  function _checkForDomain(string memory _domain) internal returns (bytes32 requestId) {
-
+  function _checkForDomain(string memory _domain, bytes4 selector) internal returns (bytes32 requestId) {
     Chainlink.Request memory req = buildChainlinkRequest(
       jobId,
       address(this),
-      this.fulfill.selector
+      selector
     );
 
     req.add(
@@ -94,16 +89,50 @@ contract DomainContractRegistry is ChainlinkClient{
     return sendChainlinkRequest(req, fee);
   }
     
-  function fulfill(bytes32 _requestId, string memory _address) public recordChainlinkFulfillment(_requestId) {
-    bytes memory _bytes = bytes(_address);
+
+  function fulfill1(bytes32 _requestId, string memory _address) public recordChainlinkFulfillment(_requestId) {
     address _parsedAddress;
-    
-    assembly {
-        _parsedAddress := mload(add(_bytes, 20))
-    }
-    
+    _parsedAddress = parseAddr(_address);
+
     if(!dappRegistry.isMyContract(_parsedAddress)) {
       revert DRC_UnknownContractAddress();
+    }
+    registryMap[domain].dappRegistry = address(dappRegistry);
+  }
+  
+
+  function fulfill2(bytes32 _requestId, string memory _address) public recordChainlinkFulfillment(_requestId) {
+    address _parsedAddress;
+    _parsedAddress = parseAddr(_address);
+
+    if(!dappRegistry.isMyContract(_parsedAddress)) {
+      revert DRC_UnknownContractAddress();
+    }
+    registryMap[domain].dappRegistry = address(dappRegistry);
+    registryMap[domain].admin = dappRegistry.owner();
+  }
+
+
+  function fulfill3(bytes32 _requestId, string memory _address) public recordChainlinkFulfillment(_requestId) {
+    address _parsedAddress;
+    _parsedAddress = parseAddr(_address);
+
+    if(!dappRegistry.isMyContract(_parsedAddress)) {
+      revert DRC_UnknownContractAddress();
+    }
+
+    if(recordTransitionMap[domain].dappRegistry == address(dappRegistry)) {
+      if(block.timestamp > recordTransitionMap[domain].timestamp + 7 days) {
+        registryMap[domain].dappRegistry = address(dappRegistry);
+        registryMap[domain].admin = dappRegistry.owner();
+      }
+      else {
+        revert DRC_CoolOffPeriodNotOver();
+      }
+    }
+    else {
+      recordTransitionMap[domain].dappRegistry = address(dappRegistry);
+      recordTransitionMap[domain].timestamp = block.timestamp ;
     }
   }
 
@@ -114,21 +143,35 @@ contract DomainContractRegistry is ChainlinkClient{
   function recordTransition(string memory _domain, address _dappRegistry) internal {
     
     dappRegistry = IDappRegistry(_dappRegistry);
-    _checkForDomain(_domain);
-
-    if(recordTransitionMap[_domain].dappRegistry == _dappRegistry) {
-      if(block.timestamp > recordTransitionMap[_domain].timestamp + 7 days) {
-        registryMap[_domain].dappRegistry = _dappRegistry;
-        registryMap[_domain].admin = dappRegistry.owner();
-      }
-      else {
-        revert DRC_CoolOffPeriodNotOver();
-      }
-    }
-    else {
-      recordTransitionMap[_domain].dappRegistry = _dappRegistry;
-      recordTransitionMap[_domain].timestamp = block.timestamp ;
-    }
+    _checkForDomain(_domain, this.fulfill3.selector);
   }
+
+  function parseAddr(string memory _a) internal pure returns (address _parsedAddress) {
+    bytes memory tmp = bytes(_a);
+    uint160 iaddr = 0;
+    uint160 b1;
+    uint160 b2;
+    for (uint i = 2; i < 2 + 2 * 20; i += 2) {
+        iaddr *= 256;
+        b1 = uint160(uint8(tmp[i]));
+        b2 = uint160(uint8(tmp[i + 1]));
+        if ((b1 >= 97) && (b1 <= 102)) {
+            b1 -= 87;
+        } else if ((b1 >= 65) && (b1 <= 70)) {
+            b1 -= 55;
+        } else if ((b1 >= 48) && (b1 <= 57)) {
+            b1 -= 48;
+        }
+        if ((b2 >= 97) && (b2 <= 102)) {
+            b2 -= 87;
+        } else if ((b2 >= 65) && (b2 <= 70)) {
+            b2 -= 55;
+        } else if ((b2 >= 48) && (b2 <= 57)) {
+            b2 -= 48;
+        }
+        iaddr += (b1 * 16 + b2);
+    }
+    return address(iaddr);
+}
      
 }
